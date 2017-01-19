@@ -58,6 +58,8 @@ func main() {
 
 	flag.InitFlags()
 
+	os.Setenv("TAGS", opt.Tags)
+
 	if opt.Version {
 		fmt.Println(version.VersionInfo())
 		os.Exit(0)

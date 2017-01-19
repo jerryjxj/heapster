@@ -39,6 +39,7 @@ type HeapsterRunOptions struct {
 	HistoricalSource string
 	Version          bool
 	LabelSeperator   string
+	Tags             string
 }
 
 func NewHeapsterRunOptions() *HeapsterRunOptions {
@@ -69,4 +70,5 @@ func (h *HeapsterRunOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&h.HistoricalSource, "historical_source", "", "which source type to use for the historical API (should be exactly the same as one of the sink URIs), or empty to disable the historical API")
 	fs.BoolVar(&h.Version, "version", false, "print version info and exit")
 	fs.StringVar(&h.LabelSeperator, "label_seperator", ",", "seperator used for joining labels")
+	fs.StringVar(&h.Tags, "tags", "", "static tags for messages")
 }

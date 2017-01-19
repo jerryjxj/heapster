@@ -22,6 +22,8 @@ import (
 	"github.com/golang/glog"
 	kafka_common "k8s.io/heapster/common/kafka"
 	"k8s.io/heapster/metrics/core"
+	"os"
+	"strings"
 )
 
 type KafkaSinkPoint struct {
@@ -32,6 +34,7 @@ type KafkaSinkPoint struct {
 }
 
 type kafkaSink struct {
+	staticTags map[string]string
 	kafka_common.KafkaClient
 	sync.RWMutex
 }
@@ -42,9 +45,18 @@ func (sink *kafkaSink) ExportData(dataBatch *core.DataBatch) {
 
 	for _, metricSet := range dataBatch.MetricSets {
 		for metricName, metricValue := range metricSet.MetricValues {
+			labels := make(map[string]string)
+			for k, v := range metricSet.Labels {
+				labels[k] = v
+			}
+
+			for k, v := range sink.staticTags {
+				labels[k] = v
+			}
+
 			point := KafkaSinkPoint{
 				MetricsName: metricName,
-				MetricsTags: metricSet.Labels,
+				MetricsTags: labels,
 				MetricsValue: map[string]interface{}{
 					"value": metricValue.GetValue(),
 				},
@@ -63,6 +75,11 @@ func (sink *kafkaSink) ExportData(dataBatch *core.DataBatch) {
 			for k, v := range metric.Labels {
 				labels[k] = v
 			}
+
+			for k, v := range sink.staticTags {
+				labels[k] = v
+			}
+
 			point := KafkaSinkPoint{
 				MetricsName: metric.Name,
 				MetricsTags: labels,
@@ -84,8 +101,22 @@ func NewKafkaSink(uri *url.URL) (core.DataSink, error) {
 	if err != nil {
 		return nil, err
 	}
+	tags := make(map[string]string)
+	tagStr := os.Getenv("TAGS")
+	if tagStr != "" {
+		tagSplits := strings.Split(tagStr, ";")
+		for _, split := range tagSplits {
+			kv := strings.Split(split, "=")
+			if len(kv) == 2 {
+				tags[kv[0]] = kv[1]
+			}
+		}
+	}
+
+	glog.Info("Global tags: ", tags)
 
 	return &kafkaSink{
 		KafkaClient: client,
+		staticTags:  tags,
 	}, nil
 }

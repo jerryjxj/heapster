@@ -39,6 +39,7 @@ var (
 	argSources   flags.Uris
 	argSinks     flags.Uris
 	argVersion   bool
+	tags         string
 )
 
 func main() {
@@ -47,7 +48,10 @@ func main() {
 	flag.Var(&argSources, "source", "source(s) to read events from")
 	flag.Var(&argSinks, "sink", "external sink(s) that receive events")
 	flag.BoolVar(&argVersion, "version", false, "print version info and exit")
+	flag.StringVar(&tags, "tags", "", "static tags for messages")
 	flag.Parse()
+
+	os.Setenv("TAGS", tags)
 
 	if argVersion {
 		fmt.Println(version.VersionInfo())
