@@ -24,6 +24,8 @@ import (
 	"k8s.io/heapster/metrics/core"
 	"os"
 	"strings"
+	"fmt"
+	"strconv"
 )
 
 type KafkaSinkPoint struct {
@@ -37,70 +39,53 @@ type kafkaSink struct {
 	staticTags map[string]string
 	kafka_common.KafkaClient
 	sync.RWMutex
+	// JSON or Influx
+	format    string
+	maxRecordSize    int
 }
 
 func (sink *kafkaSink) ExportData(dataBatch *core.DataBatch) {
 	sink.Lock()
 	defer sink.Unlock()
 
-	for _, metricSet := range dataBatch.MetricSets {
-		for metricName, metricValue := range metricSet.MetricValues {
-			labels := make(map[string]string)
-			for k, v := range metricSet.Labels {
-				labels[k] = v
-			}
-
-			for k, v := range sink.staticTags {
-				labels[k] = v
-			}
-
-			point := KafkaSinkPoint{
-				MetricsName: metricName,
-				MetricsTags: labels,
-				MetricsValue: map[string]interface{}{
-					"value": metricValue.GetValue(),
-				},
-				MetricsTimestamp: dataBatch.Timestamp.UTC(),
-			}
-			err := sink.ProduceKafkaMessage(point)
-			if err != nil {
-				glog.Errorf("Failed to produce metric message: %s", err)
-			}
-		}
-		for _, metric := range metricSet.LabeledMetrics {
-			labels := make(map[string]string)
-			for k, v := range metricSet.Labels {
-				labels[k] = v
-			}
-			for k, v := range metric.Labels {
-				labels[k] = v
-			}
-
-			for k, v := range sink.staticTags {
-				labels[k] = v
-			}
-
-			point := KafkaSinkPoint{
-				MetricsName: metric.Name,
-				MetricsTags: labels,
-				MetricsValue: map[string]interface{}{
-					"value": metric.GetValue(),
-				},
-				MetricsTimestamp: dataBatch.Timestamp.UTC(),
-			}
-			err := sink.ProduceKafkaMessage(point)
-			if err != nil {
-				glog.Errorf("Failed to produce metric message: %s", err)
-			}
-		}
+	if sink.format == "json" {
+		sink.exportJsonData(dataBatch)
+	} else {
+		sink.exportInfluxData(dataBatch)
 	}
 }
+
 
 func NewKafkaSink(uri *url.URL) (core.DataSink, error) {
 	client, err := kafka_common.NewKafkaClient(uri, kafka_common.TimeSeriesTopic)
 	if err != nil {
 		return nil, err
 	}
+
+	opts, err := url.ParseQuery(uri.RawQuery)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parser url's query string: %s", err)
+	}
+
+	format := "json"
+	if len(opts["format"]) > 0 {
+		if format == "json" || format == "influx" {
+			format = opts["format"][0]
+		}
+	}
+
+	maxRecordSize := 1000
+	if len(opts["batchsize"]) > 0 {
+		maxRecordSize, err = strconv.Atoi(opts["batchsize"][0])
+		if err != nil {
+			return nil, fmt.Errorf("batchsize should be a integer", err)
+		}
+
+		if maxRecordSize <= 0 {
+			return nil, fmt.Errorf("batchsize should be above 0")
+		}
+	}
+
 	tags := make(map[string]string)
 	tagStr := os.Getenv("TAGS")
 	if tagStr != "" {
@@ -113,10 +98,13 @@ func NewKafkaSink(uri *url.URL) (core.DataSink, error) {
 		}
 	}
 
+
 	glog.Info("Global tags: ", tags)
 
 	return &kafkaSink{
 		KafkaClient: client,
 		staticTags:  tags,
+		format: format,
+		maxRecordSize: maxRecordSize,
 	}, nil
 }

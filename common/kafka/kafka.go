@@ -26,32 +26,6 @@ import (
 )
 
 const (
-	/*
-	## CompressionCodec represents the various compression codecs recognized by
-	## Kafka in messages.
-	##  0 : No compression
-	##  1 : Gzip compression
-	##  2 : Snappy compression
-	*/
-	compression              = 0
-	/*
-	 ##  RequiredAcks is used in Produce Requests to tell the broker how many
-         ##  replica acknowledgements it must see before responding
-	 ##   0 : the producer never waits for an acknowledgement from the broker.
-	 ##       This option provides the lowest latency but the weakest durability
-	 ##       guarantees (some data will be lost when a server fails).
-	 ##   1 : the producer gets an acknowledgement after the leader replica has
-	 ##       received the data. This option provides better durability as the
-	 ##       client waits until the server acknowledges the request as successful
-         ##       (only messages that were written to the now-dead leader but not yet
-	 ##       replicated will be lost).
-	 ##   -1: the producer gets an acknowledgement after all in-sync replicas have
-	 ##       received the data. This option provides the best durability, we
-         ##       guarantee that no messages will be lost as long as at least one in
-	 ##       sync replica remains.
- 	 */
-	requiredAcks             = 1
-	maxRetries               = 3
 	metricsTopic             = "heapster-metrics"
 	eventsTopic              = "heapster-events"
 )
@@ -65,6 +39,7 @@ type KafkaClient interface {
 	Name() string
 	Stop()
 	ProduceKafkaMessage(msgData interface{}) error
+	ProduceKafkaStringMessage(msgData string) error
 }
 
 type kafkaSink struct {
@@ -72,8 +47,24 @@ type kafkaSink struct {
 	dataTopic string
 }
 
+func  (sink *kafkaSink) ProduceKafkaStringMessage(msgData string) error {
+	start := time.Now()
+	m := &sarama.ProducerMessage{
+		Topic: sink.dataTopic,
+		Value: sarama.ByteEncoder(msgData),
+	}
+	_, _, err := sink.producer.SendMessage(m)
+	if err != nil {
+		return fmt.Errorf("failed to produce message to %s: %s", sink.dataTopic, err)
+	}
+	end := time.Now()
+	glog.V(4).Infof("Exported %d data to kafka in %s", len([]byte(string(msgData))), end.Sub(start))
+	return nil
+}
+
 func (sink *kafkaSink) ProduceKafkaMessage(msgData interface{}) error {
 	start := time.Now()
+
 	msgJson, err := json.Marshal(msgData)
 	if err != nil {
 		return fmt.Errorf("failed to transform the items to json : %s", err)
@@ -130,27 +121,28 @@ func NewKafkaClient(uri *url.URL, topicType string) (KafkaClient, error) {
 		return nil, err
 	}
 
+	// Kafka log redirect to stderr
+	sarama.Logger = log.New(os.Stdout, "[Sarama]", log.LstdFlags)
+
+
 	var kafkaBrokers []string
 	if len(opts["brokers"]) < 1 {
 		return nil, fmt.Errorf("There is no broker assigned for connecting kafka")
 	}
 	kafkaBrokers = append(kafkaBrokers, opts["brokers"]...)
-	glog.V(4).Infof("initializing kafka sink with brokers - %v", kafkaBrokers)
-
+	glog.V(3).Infof("initializing kafka sink with brokers - %v", kafkaBrokers)
+	fmt.Errorf("initializing kafka sink with brokers")
 	config := sarama.NewConfig()
 	config.ClientID = topic
-	config.Producer.Compression = sarama.CompressionCodec(compression)
+	config.Producer.Compression = sarama.CompressionCodec(sarama.CompressionGZIP)
 	config.Producer.Return.Successes = true
-	config.Producer.RequiredAcks = sarama.RequiredAcks(requiredAcks)
-	config.Producer.Retry.Max = maxRetries
+	config.Producer.RequiredAcks = sarama.RequiredAcks(sarama.WaitForLocal)
+	config.Producer.Retry.Max = 3
 
 	producer, err := sarama.NewSyncProducer(kafkaBrokers, config)
 	if err != nil {
 		return nil, err
 	}
-
-	// Kafka log redirect to stderr
-	sarama.Logger = log.New(os.Stdout, "[Sarama]", log.LstdFlags)
 
 
 	return &kafkaSink{
