@@ -186,6 +186,13 @@ func (this *kubeletMetricsSource) decodeMetrics(c *cadvisor.ContainerInfo) (stri
 		}
 	}
 
+	if isNode(c) {
+		if MetricFilesystemUsagePercentage.HasLabeledMetric != nil && MetricFilesystemUsagePercentage.HasLabeledMetric(&c.Spec) {
+			labeledMetrics := MetricFilesystemUsagePercentage.GetLabeledMetric(&c.Spec, c.Stats[0])
+			cMetrics.LabeledMetrics = append(cMetrics.LabeledMetrics, labeledMetrics...)
+		}
+	}
+
 	if c.Spec.HasCustomMetrics {
 	metricloop:
 		for _, spec := range c.Spec.CustomMetrics {
