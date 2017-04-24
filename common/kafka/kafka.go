@@ -19,20 +19,13 @@ import (
 	"fmt"
 	"net/url"
 	"time"
-
+	"log"
+	"os"
 	"github.com/golang/glog"
-	"github.com/optiopay/kafka"
-	"github.com/optiopay/kafka/proto"
+	"github.com/Shopify/sarama"
 )
 
 const (
-	brokerClientID           = "kafka-sink"
-	brokerDialTimeout        = 10 * time.Second
-	brokerDialRetryLimit     = 1
-	brokerDialRetryWait      = 0
-	brokerAllowTopicCreation = true
-	brokerLeaderRetryLimit   = 1
-	brokerLeaderRetryWait    = 0
 	metricsTopic             = "heapster-metrics"
 	eventsTopic              = "heapster-events"
 )
@@ -46,22 +39,42 @@ type KafkaClient interface {
 	Name() string
 	Stop()
 	ProduceKafkaMessage(msgData interface{}) error
+	ProduceKafkaStringMessage(msgData string) error
 }
 
 type kafkaSink struct {
-	producer  kafka.DistributingProducer
+	producer  sarama.SyncProducer
 	dataTopic string
+}
+
+func  (sink *kafkaSink) ProduceKafkaStringMessage(msgData string) error {
+	start := time.Now()
+	m := &sarama.ProducerMessage{
+		Topic: sink.dataTopic,
+		Value: sarama.ByteEncoder(msgData),
+	}
+	_, _, err := sink.producer.SendMessage(m)
+	if err != nil {
+		return fmt.Errorf("failed to produce message to %s: %s", sink.dataTopic, err)
+	}
+	end := time.Now()
+	glog.V(4).Infof("Exported %d data to kafka in %s", len([]byte(string(msgData))), end.Sub(start))
+	return nil
 }
 
 func (sink *kafkaSink) ProduceKafkaMessage(msgData interface{}) error {
 	start := time.Now()
+
 	msgJson, err := json.Marshal(msgData)
 	if err != nil {
 		return fmt.Errorf("failed to transform the items to json : %s", err)
 	}
 
-	message := &proto.Message{Value: []byte(string(msgJson))}
-	_, err = sink.producer.Distribute(sink.dataTopic, message)
+	m := &sarama.ProducerMessage{
+		Topic: sink.dataTopic,
+		Value: sarama.ByteEncoder(string(msgJson)),
+	}
+	_, _, err = sink.producer.SendMessage(m)
 	if err != nil {
 		return fmt.Errorf("failed to produce message to %s: %s", sink.dataTopic, err)
 	}
@@ -76,31 +89,6 @@ func (sink *kafkaSink) Name() string {
 
 func (sink *kafkaSink) Stop() {
 	// nothing needs to be done.
-}
-
-// setupProducer returns a producer of kafka server
-func setupProducer(sinkBrokerHosts []string, topic string, brokerConf kafka.BrokerConf) (kafka.DistributingProducer, error) {
-	glog.V(3).Infof("attempting to setup kafka sink")
-	broker, err := kafka.Dial(sinkBrokerHosts, brokerConf)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to kafka cluster: %s", err)
-	}
-	defer broker.Close()
-
-	//create kafka producer
-	conf := kafka.NewProducerConf()
-	conf.RequiredAcks = proto.RequiredAcksLocal
-	producer := broker.Producer(conf)
-
-	// create RoundRobinProducer with the default producer.
-	count, err := broker.PartitionCount(topic)
-	if err != nil {
-		count = 1
-		glog.Warningf("Failed to get partition count of topic %q: %s", topic, err)
-	}
-	sinkProducer := kafka.NewRoundRobinProducer(producer, count)
-	glog.V(3).Infof("kafka sink setup successfully")
-	return sinkProducer, nil
 }
 
 func getTopic(opts map[string][]string, topicType string) (string, error) {
@@ -133,30 +121,32 @@ func NewKafkaClient(uri *url.URL, topicType string) (KafkaClient, error) {
 		return nil, err
 	}
 
+	// Kafka log redirect to stderr
+	sarama.Logger = log.New(os.Stdout, "[Sarama]", log.LstdFlags)
+
+
 	var kafkaBrokers []string
 	if len(opts["brokers"]) < 1 {
 		return nil, fmt.Errorf("There is no broker assigned for connecting kafka")
 	}
 	kafkaBrokers = append(kafkaBrokers, opts["brokers"]...)
-	glog.V(2).Infof("initializing kafka sink with brokers - %v", kafkaBrokers)
+	glog.V(3).Infof("initializing kafka sink with brokers - %v", kafkaBrokers)
+	fmt.Errorf("initializing kafka sink with brokers")
+	config := sarama.NewConfig()
+	config.ClientID = topic
+	config.Producer.Compression = sarama.CompressionCodec(sarama.CompressionGZIP)
+	config.Producer.Return.Successes = true
+	config.Producer.RequiredAcks = sarama.RequiredAcks(sarama.WaitForLocal)
+	config.Producer.Retry.Max = 3
 
-	//structure the config of broker
-	brokerConf := kafka.NewBrokerConf(brokerClientID)
-	brokerConf.DialTimeout = brokerDialTimeout
-	brokerConf.DialRetryLimit = brokerDialRetryLimit
-	brokerConf.DialRetryWait = brokerDialRetryWait
-	brokerConf.LeaderRetryLimit = brokerLeaderRetryLimit
-	brokerConf.LeaderRetryWait = brokerLeaderRetryWait
-	brokerConf.AllowTopicCreation = brokerAllowTopicCreation
-
-	// set up producer of kafka server.
-	sinkProducer, err := setupProducer(kafkaBrokers, topic, brokerConf)
+	producer, err := sarama.NewSyncProducer(kafkaBrokers, config)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to setup Producer: - %v", err)
+		return nil, err
 	}
 
+
 	return &kafkaSink{
-		producer:  sinkProducer,
+		producer:  producer,
 		dataTopic: topic,
 	}, nil
 }

@@ -17,6 +17,8 @@ package kafka
 import (
 	"encoding/json"
 	"net/url"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,6 +36,7 @@ type KafkaSinkPoint struct {
 }
 
 type kafkaSink struct {
+	staticTags map[string]string
 	kafka_common.KafkaClient
 	sync.RWMutex
 }
@@ -47,7 +50,7 @@ func getEventValue(event *kube_api.Event) (string, error) {
 	return string(bytes), nil
 }
 
-func eventToPoint(event *kube_api.Event) (*KafkaSinkPoint, error) {
+func (sink *kafkaSink) eventToPoint(event *kube_api.Event) (*KafkaSinkPoint, error) {
 	value, err := getEventValue(event)
 	if err != nil {
 		return nil, err
@@ -59,6 +62,11 @@ func eventToPoint(event *kube_api.Event) (*KafkaSinkPoint, error) {
 			"eventID": string(event.UID),
 		},
 	}
+
+	for k, v := range sink.staticTags {
+		point.EventTags[k] = v
+	}
+
 	if event.InvolvedObject.Kind == "Pod" {
 		point.EventTags[core.LabelPodId.Key] = string(event.InvolvedObject.UID)
 		point.EventTags[core.LabelPodName.Key] = event.InvolvedObject.Name
@@ -72,7 +80,7 @@ func (sink *kafkaSink) ExportEvents(eventBatch *event_core.EventBatch) {
 	defer sink.Unlock()
 
 	for _, event := range eventBatch.Events {
-		point, err := eventToPoint(event)
+		point, err := sink.eventToPoint(event)
 		if err != nil {
 			glog.Warningf("Failed to convert event to point: %v", err)
 		}
@@ -90,7 +98,21 @@ func NewKafkaSink(uri *url.URL) (event_core.EventSink, error) {
 		return nil, err
 	}
 
+	tags := make(map[string]string)
+	tagStr := os.Getenv("TAGS")
+	if tagStr != "" {
+		tagSplits := strings.Split(tagStr, ";")
+		for _, split := range tagSplits {
+			kv := strings.Split(split, "=")
+			if len(kv) == 2 {
+				tags[kv[0]] = kv[1]
+			}
+		}
+	}
+
+	glog.Info("Global tags: ", tags)
 	return &kafkaSink{
 		KafkaClient: client,
+		staticTags:  tags,
 	}, nil
 }

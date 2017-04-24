@@ -38,6 +38,7 @@ import (
 )
 
 var (
+	tags           string
 	argFrequency   = flag.Duration("frequency", 30*time.Second, "The resolution at which Eventer pushes events to sinks")
 	argMaxProcs    = flag.Int("max_procs", 0, "max number of CPUs that can be used simultaneously. Less than 1 for default (number of cores)")
 	argSources     flags.Uris
@@ -53,7 +54,10 @@ func main() {
 	flag.Var(&argSources, "source", "source(s) to read events from")
 	flag.Var(&argSinks, "sink", "external sink(s) that receive events")
 	flag.BoolVar(&argVersion, "version", false, "print version info and exit")
+	flag.StringVar(&tags, "tags", "", "static tags for messages")
 	flag.Parse()
+
+	os.Setenv("TAGS", tags)
 
 	if argVersion {
 		fmt.Println(version.VersionInfo())
